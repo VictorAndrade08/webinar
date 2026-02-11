@@ -5,23 +5,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 /**
- * CONFIGURACIÓN DE SINCRONIZACIÓN GLOBAL (Sin Firebase)
- * Usamos Gun.js cargado desde CDN para evitar errores de "Module not found" en tu terminal.
+ * CONFIGURACIÓN DE RED (Reddit WebRTC Stack)
+ * Gun.js para sincronizar diapositivas.
+ * PeerJS para transmitir Video y Audio P2P.
  */
 const GUN_CDN = "https://cdn.jsdelivr.net/npm/gun/gun.js";
-const GUN_PEERS = [
-  'https://gun-manhattan.herokuapp.com/gun',
-  'https://relay.peer.ooo/gun'
-];
+const PEER_CDN = "https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js";
+const GUN_PEERS = ['https://gun-manhattan.herokuapp.com/gun', 'https://relay.peer.ooo/gun'];
 
-// --- CONFIGURACIÓN DEL PDF ---
 const RAW_PDF_URL = "https://darkturquoise-capybara-951908.hostingersite.com/wp-content/uploads/2026/02/10L-Juanes-2026.pdf";
-
-const getPdfUrl = (page) => {
-  // Proxy de Google Docs para saltar el bloqueo de Hostinger
-  return `https://docs.google.com/viewer?url=${encodeURIComponent(RAW_PDF_URL)}&embedded=true`;
-};
-
+const getPdfUrl = (page) => `https://docs.google.com/viewer?url=${encodeURIComponent(RAW_PDF_URL)}&embedded=true`;
 const TOTAL_PAGES = 30; 
 
 const Icons = {
@@ -29,175 +22,165 @@ const Icons = {
   MicOff: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>,
   Cam: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
   Arrow: (dir) => <svg style={{ transform: dir === 'prev' ? 'rotate(180deg)' : 'none' }} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>,
-  Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+  Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>,
+  Host: () => <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" fill="none" />
 };
 
 export default function App() {
   const [isMounted, setIsMounted] = useState(false);
   const [roomInput, setRoomInput] = useState("");
   const [activeRoom, setActiveRoom] = useState(null);
+  const [role, setRole] = useState(null); // 'host' | 'viewer'
   const [pageIndex, setPageIndex] = useState(1);
-  const [voiceOn, setVoiceOn] = useState(false);
-  const [camOn, setCamOn] = useState(false);
-  const [isLocked, setIsLocked] = useState(false);
-  const [msg, setMsg] = useState("Iniciando sistema...");
+  const [isLive, setIsLive] = useState(false);
+  const [msg, setMsg] = useState("Conectando sistemas...");
   const [toast, setToast] = useState("");
 
   const gunRef = useRef(null);
-  const recognitionRef = useRef(null);
+  const peerRef = useRef(null);
+  const localStreamRef = useRef(null);
   const videoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const recognitionRef = useRef(null);
 
-  // --- 1. CARGA DE LIBRERÍAS Y ESCUDO ANTI-ERRORES ---
   useEffect(() => {
     setIsMounted(true);
-    
-    // Cargamos Gun.js dinámicamente para que no dé error en tu VS Code
-    const script = document.createElement('script');
-    script.src = GUN_CDN;
-    script.async = true;
-    script.onload = () => {
-      if (window.Gun) {
-        gunRef.current = window.Gun(GUN_PEERS);
-        setMsg("Red P2P conectada. Listo.");
-        
-        // Auto-join si viene por URL
-        const params = new URLSearchParams(window.location.search);
-        const roomParam = params.get('room');
-        if (roomParam) handleJoin(roomParam);
-      }
-    };
-    document.body.appendChild(script);
+    // Carga de Scripts
+    const loadScript = (src) => new Promise(res => {
+      const s = document.createElement('script'); s.src = src; s.onload = res; document.body.appendChild(s);
+    });
 
-    return () => { if (document.body.contains(script)) document.body.removeChild(script); };
+    Promise.all([loadScript(GUN_CDN), loadScript(PEER_CDN)]).then(() => {
+      if (window.Gun) gunRef.current = window.Gun(GUN_PEERS);
+      setMsg("Sistemas P2P Listos.");
+      
+      const params = new URLSearchParams(window.location.search);
+      const roomParam = params.get('room');
+      if (roomParam) {
+        setRoomInput(roomParam);
+        setMsg(`Sala "${roomParam}" detectada.`);
+      }
+    });
   }, []);
 
-  // --- 2. SINCRONIZACIÓN EN TIEMPO REAL ---
+  // --- SINCRONIZACIÓN DE PÁGINAS ---
   useEffect(() => {
     if (!activeRoom || !gunRef.current) return;
-
-    const room = gunRef.current.get('webinar-v10').get(activeRoom);
-    
+    const room = gunRef.current.get('webinar-v20').get(activeRoom);
     room.get('page').on((data) => {
-      if (data && data !== pageIndex) {
-        setPageIndex(data);
-        setMsg(`Sincronizado: Página ${data}`);
+      if (data && data !== pageIndex) setPageIndex(data);
+    });
+    // Escuchar quién es el Host actual para conectar el video
+    room.get('hostPeerId').on((id) => {
+      if (id && role === 'viewer') connectToHostStream(id);
+    });
+    return () => room.off();
+  }, [activeRoom, role]);
+
+  // --- LÓGICA DE VIDEO Y AUDIO (PEERJS) ---
+  const initPeer = (roomName, isHost) => {
+    const peer = new window.Peer();
+    peerRef.current = peer;
+
+    peer.on('open', (id) => {
+      if (isHost) {
+        gunRef.current.get('webinar-v20').get(roomName).get('hostPeerId').put(id);
+        setMsg("Transmitiendo señal de video...");
       }
     });
 
-    return () => { if (room) room.off(); };
-  }, [activeRoom]);
+    peer.on('call', (call) => {
+      // Como Host, contestamos con nuestro stream local
+      if (localStreamRef.current) {
+        call.answer(localStreamRef.current);
+      }
+    });
 
-  // --- LÓGICA DE SALAS ---
-  const handleJoin = (roomName) => {
-    const name = (roomName || roomInput).trim().toLowerCase();
+    peer.on('error', () => setMsg("Error de conexión P2P."));
+  };
+
+  const connectToHostStream = (hostId) => {
+    if (!peerRef.current || role !== 'viewer') return;
+    setMsg("Conectando con la cámara del Host...");
+    const call = peerRef.current.call(hostId, new MediaStream()); // Llamada vacía para recibir
+    call.on('stream', (remoteStream) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStream;
+        setIsLive(true);
+      }
+    });
+  };
+
+  const startMedia = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStreamRef.current = stream;
+      if (videoRef.current) videoRef.current.srcObject = stream;
+      setIsLive(true);
+      return true;
+    } catch (e) {
+      setMsg("Permiso de cámara denegado.");
+      return false;
+    }
+  };
+
+  const handleJoin = async (selectedRole) => {
+    const name = roomInput.trim().toLowerCase();
     if (!name) return setMsg("Escribe un nombre de sala.");
+    
+    setRole(selectedRole);
     setActiveRoom(name);
-    setMsg(`Conectado a la sala: ${name}`);
+
+    if (selectedRole === 'host') {
+      const success = await startMedia();
+      if (success) initPeer(name, true);
+    } else {
+      initPeer(name, false);
+      setMsg("Esperando al Host...");
+    }
   };
 
   const changePage = (step) => {
-    if (isLocked) return;
-    setIsLocked(true);
-    setTimeout(() => setIsLocked(false), 1000);
-
     const newPage = Math.max(1, Math.min(TOTAL_PAGES, pageIndex + step));
     setPageIndex(newPage);
-    
-    // Enviamos el cambio a todos los que estén en la misma sala
     if (activeRoom && gunRef.current) {
-      gunRef.current.get('webinar-v10').get(activeRoom).get('page').put(newPage);
+      gunRef.current.get('webinar-v20').get(activeRoom).get('page').put(newPage);
     }
-  };
-
-  // --- CONTROLES DE VOZ ---
-  const toggleVoice = () => {
-    if (voiceOn) {
-      if (recognitionRef.current) recognitionRef.current.stop();
-      setVoiceOn(false);
-      return;
-    }
-
-    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRec) return setMsg("Voz no compatible.");
-
-    try {
-      const rec = new SpeechRec();
-      rec.lang = 'es-ES';
-      rec.continuous = true;
-      rec.onstart = () => { setVoiceOn(true); setMsg("🎤 Escuchando..."); };
-      rec.onresult = (e) => {
-        const text = e.results[e.results.length - 1][0].transcript.toLowerCase();
-        if (text.includes('siguiente') || text.includes('pasa')) changePage(1);
-        else if (text.includes('atrás') || text.includes('vuelve')) changePage(-1);
-      };
-      rec.onerror = () => setVoiceOn(false);
-      recognitionRef.current = rec;
-      rec.start();
-    } catch (e) { setMsg("Error en micrófono."); }
-  };
-
-  const toggleCamera = async () => {
-    if (camOn) {
-      if (videoRef.current?.srcObject) videoRef.current.srcObject.getTracks().forEach(t => t.stop());
-      setCamOn(false);
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        setCamOn(true);
-      }
-    } catch (e) { setMsg("Cámara bloqueada."); }
   };
 
   const copyLink = () => {
     const url = `${window.location.origin}${window.location.pathname}?room=${activeRoom}`;
-    const el = document.createElement('textarea');
-    el.value = url;
-    document.body.appendChild(el);
-    el.select();
-    document.execCommand('copy');
-    document.body.removeChild(el);
-    setToast("¡Enlace copiado! Envíalo a otros.");
+    navigator.clipboard.writeText(url);
+    setToast("¡Enlace copiado para tus invitados!");
     setTimeout(() => setToast(""), 3000);
   };
 
-  // Escudo anti-errores de hidratación
   if (!isMounted) return null;
 
-  // --- VISTA INICIAL ---
   if (!activeRoom) {
     return (
       <div style={containerStyle} suppressHydrationWarning>
-        <style>{`body { margin: 0; background: #020617; font-family: sans-serif; }`}</style>
+        <style>{`body { margin: 0; background: #020617; font-family: 'Inter', sans-serif; color: white; }`}</style>
         <div style={cardStyle}>
-          <div style={{ fontSize: '4rem', marginBottom: '15px' }}>🚀</div>
-          <h1 style={{ fontSize: '2.5rem', fontWeight: 900, color: 'white' }}>Webinar Live PDF</h1>
-          <p style={{ opacity: 0.6, marginBottom: '40px', color: 'white' }}>Sin registros. P2P automático.</p>
-          
+          <div style={{ fontSize: '4rem', marginBottom: '15px' }}>🎙️</div>
+          <h1 style={{ fontSize: '2.5rem', fontWeight: 900 }}>Webinar Live Pro</h1>
+          <p style={{ opacity: 0.6, marginBottom: '40px' }}>Video, Audio y PDF sincronizados P2P.</p>
           <input 
             placeholder="NOMBRE DE LA SALA"
             value={roomInput}
             onChange={(e) => setRoomInput(e.target.value)}
             style={inputStyle}
           />
-          
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
-            <button onClick={() => handleJoin()} style={btnMainStyle}>
-              CREAR / UNIRSE A SALA
-            </button>
+            <button onClick={() => handleJoin('host')} style={btnMainStyle}>CREAR COMO HOST (Voz y Cámara)</button>
+            <button onClick={() => handleJoin('viewer')} style={{ ...btnMainStyle, background: 'transparent', border: '2px solid #3b82f6' }}>UNIRSE COMO ESPECTADOR</button>
           </div>
-          
-          <div style={{ marginTop: '30px', fontSize: '12px', color: '#64748b', fontFamily: 'monospace' }}>
-            {msg}
-          </div>
+          <div style={{ marginTop: '30px', fontSize: '12px', color: '#64748b' }}>{msg}</div>
         </div>
       </div>
     );
   }
 
-  // --- VISTA PRESENTACIÓN ---
   return (
     <div style={containerStyle} suppressHydrationWarning>
       <style>{`
@@ -208,52 +191,42 @@ export default function App() {
 
       {toast && <div className="toast">{toast}</div>}
 
-      {/* Cámara Flotante */}
+      {/* VIDEO FLOTANTE (Solo se ve si hay señal) */}
       <div style={{
         position: 'fixed', bottom: '130px', right: '30px', 
-        width: camOn ? '280px' : '0', height: camOn ? '280px' : '0',
-        borderRadius: '32px', overflow: 'hidden', border: '4px solid #3b82f6', zIndex: 100,
-        backgroundColor: '#000', transition: 'all 0.4s ease', boxShadow: '0 20px 50px rgba(0,0,0,0.6)'
+        width: isLive ? '280px' : '0', height: isLive ? '210px' : '0',
+        borderRadius: '24px', overflow: 'hidden', border: '4px solid #3b82f6', zIndex: 100,
+        backgroundColor: '#000', transition: '0.4s ease', boxShadow: '0 20px 50px rgba(0,0,0,0.6)'
       }}>
-        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
+        {role === 'host' ? 
+          <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} /> :
+          <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        }
       </div>
 
-      {/* Header */}
       <div style={headerStyle}>
         <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#ef4444', padding: '6px 12px', borderRadius: '10px' }}>
-             <span style={{ fontWeight: 900, fontSize: '12px', color: 'white' }}>LIVE</span>
+          <div style={{ background: role === 'host' ? '#ef4444' : '#3b82f6', padding: '6px 12px', borderRadius: '10px' }}>
+             <span style={{ fontWeight: 900, fontSize: '12px', color: 'white' }}>{role === 'host' ? 'TRANSMITIENDO' : 'EN VIVO'}</span>
           </div>
-          <div style={{ fontWeight: 800, fontSize: '16px', color: 'white' }}>SALA: <span style={{ color: '#3b82f6' }}>{activeRoom.toUpperCase()}</span></div>
+          <div style={{ fontWeight: 800, fontSize: '16px', color: 'white' }}>SALA: {activeRoom.toUpperCase()}</div>
         </div>
-        
         <button onClick={copyLink} style={{ background: '#3b82f6', border: 'none', color: 'white', padding: '10px 20px', borderRadius: '14px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}>
           <Icons.Share /> COPIAR LINK
         </button>
       </div>
 
-      {/* Visor PDF */}
-      <div style={{ flex: 1, width: '100%', background: '#1e293b', overflow: 'hidden', position: 'relative' }}>
-        <iframe 
-          key={pageIndex}
-          src={getPdfUrl(pageIndex)} 
-          style={{ width: '100%', height: '100%', border: 'none' }}
-          title="PDF Content"
-        />
+      <div style={{ flex: 1, width: '100%', background: '#1e293b', overflow: 'hidden' }}>
+        <iframe key={pageIndex} src={getPdfUrl(pageIndex)} style={{ width: '100%', height: '100%', border: 'none' }} />
       </div>
 
-      {/* Footer de Control */}
       <div style={footerStyle}>
-        <div style={{ display: 'flex', gap: '15px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '15px', justifyContent: 'center', alignItems: 'center' }}>
           <button onClick={() => changePage(-1)} style={btnNavStyle}><Icons.Arrow dir="prev" /></button>
           
-          <button onClick={toggleVoice} style={{ ...btnNavStyle, width: '200px', background: voiceOn ? '#3b82f6' : '#1e293b' }}>
-             <span style={{ color: 'white', fontWeight: 'bold' }}>{voiceOn ? '🎤 VOZ ACTIVA' : 'ACTIVAR VOZ'}</span>
-          </button>
-
-          <button onClick={toggleCamera} style={{ ...btnNavStyle, width: '180px' }}>
-            <Icons.Cam /> <span style={{ marginLeft: '12px', color: 'white', fontWeight: 'bold' }}>{camOn ? 'CAM OFF' : 'CÁMARA HD'}</span>
-          </button>
+          <div style={{ color: 'white', fontWeight: 'bold', background: '#1e293b', padding: '10px 20px', borderRadius: '12px', minWidth: '120px' }}>
+            PÁGINA {pageIndex}
+          </div>
 
           <button onClick={() => changePage(1)} style={btnNavStyle}><Icons.Arrow dir="next" /></button>
         </div>
@@ -263,11 +236,10 @@ export default function App() {
   );
 }
 
-// --- ESTILOS ---
 const containerStyle = { height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' };
 const cardStyle = { background: '#0f172a', padding: '60px', borderRadius: '50px', width: '100%', maxWidth: '440px', textAlign: 'center', border: '1px solid rgba(255,255,255,0.05)', boxShadow: '0 40px 100px rgba(0,0,0,0.6)' };
 const inputStyle = { width: '100%', padding: '22px', borderRadius: '20px', border: '2px solid #3b82f6', background: 'transparent', color: 'white', marginBottom: '25px', fontSize: '1.2rem', textAlign: 'center', outline: 'none', boxSizing: 'border-box', fontWeight: 'bold' };
-const btnMainStyle = { width: '100%', padding: '22px', borderRadius: '20px', border: 'none', background: '#3b82f6', color: 'white', fontWeight: 900, cursor: 'pointer', fontSize: '1.1rem' };
+const btnMainStyle = { width: '100%', padding: '20px', borderRadius: '20px', border: 'none', background: '#3b82f6', color: 'white', fontWeight: 900, cursor: 'pointer', fontSize: '1rem' };
 const headerStyle = { width: '100%', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#020617', borderBottom: '1px solid #1e293b', boxSizing: 'border-box', zIndex: 50 };
 const footerStyle = { width: '100%', background: '#020617', padding: '30px', borderTop: '1px solid #1e293b', textAlign: 'center', boxSizing: 'border-box', zIndex: 50 };
-const btnNavStyle = { background: '#1e293b', border: 'none', padding: '16px 28px', borderRadius: '18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s ease' };
+const btnNavStyle = { background: '#1e293b', border: 'none', padding: '16px 28px', borderRadius: '18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' };
