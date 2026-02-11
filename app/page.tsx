@@ -3,37 +3,22 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  doc, 
-  setDoc, 
-  onSnapshot, 
-  getDoc, 
-  updateDoc 
-} from 'firebase/firestore';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged 
-} from 'firebase/auth';
 
 /**
- * CONFIGURACIÓN DE BASE DE DATOS (Firestore Interno)
- * Esta es la opción más estable recomendada para webinar/conferencias.
+ * CONFIGURACIÓN DE SINCRONIZACIÓN GLOBAL (Sin Firebase)
+ * Usamos Gun.js cargado desde CDN para evitar errores de "Module not found" en tu terminal.
  */
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'webinar-live';
+const GUN_CDN = "https://cdn.jsdelivr.net/npm/gun/gun.js";
+const GUN_PEERS = [
+  'https://gun-manhattan.herokuapp.com/gun',
+  'https://relay.peer.ooo/gun'
+];
 
 // --- CONFIGURACIÓN DEL PDF ---
 const RAW_PDF_URL = "https://darkturquoise-capybara-951908.hostingersite.com/wp-content/uploads/2026/02/10L-Juanes-2026.pdf";
 
 const getPdfUrl = (page) => {
-  // Proxy de Google Docs para saltar bloqueos de Hostinger
+  // Proxy de Google Docs para saltar el bloqueo de Hostinger
   return `https://docs.google.com/viewer?url=${encodeURIComponent(RAW_PDF_URL)}&embedded=true`;
 };
 
@@ -48,104 +33,80 @@ const Icons = {
 };
 
 export default function App() {
-  const [user, setUser] = useState(null);
+  const [isMounted, setIsMounted] = useState(false);
   const [roomInput, setRoomInput] = useState("");
   const [activeRoom, setActiveRoom] = useState(null);
   const [pageIndex, setPageIndex] = useState(1);
   const [voiceOn, setVoiceOn] = useState(false);
   const [camOn, setCamOn] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
-  const [msg, setMsg] = useState("Conectando...");
+  const [msg, setMsg] = useState("Iniciando sistema...");
   const [toast, setToast] = useState("");
 
+  const gunRef = useRef(null);
   const recognitionRef = useRef(null);
   const videoRef = useRef(null);
 
-  // --- 1. AUTENTICACIÓN (REGLA 3) ---
+  // --- 1. CARGA DE LIBRERÍAS Y ESCUDO ANTI-ERRORES ---
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) {
-        setMsg("Error de autenticación inicial.");
+    setIsMounted(true);
+    
+    // Cargamos Gun.js dinámicamente para que no dé error en tu VS Code
+    const script = document.createElement('script');
+    script.src = GUN_CDN;
+    script.async = true;
+    script.onload = () => {
+      if (window.Gun) {
+        gunRef.current = window.Gun(GUN_PEERS);
+        setMsg("Red P2P conectada. Listo.");
+        
+        // Auto-join si viene por URL
+        const params = new URLSearchParams(window.location.search);
+        const roomParam = params.get('room');
+        if (roomParam) handleJoin(roomParam);
       }
     };
-    initAuth();
-    return onAuthStateChanged(auth, setUser);
+    document.body.appendChild(script);
+
+    return () => { if (document.body.contains(script)) document.body.removeChild(script); };
   }, []);
 
-  // --- 2. DETECCIÓN DE SALA POR URL (AUTO-ENTRADA) ---
+  // --- 2. SINCRONIZACIÓN EN TIEMPO REAL ---
   useEffect(() => {
-    if (!user) return;
-    const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('room');
-    if (roomParam) {
-      handleJoin(roomParam, false);
-    } else {
-      setMsg("Sistema listo. Elige una sala.");
-    }
-  }, [user]);
+    if (!activeRoom || !gunRef.current) return;
 
-  // --- 3. SINCRONIZACIÓN EN TIEMPO REAL (REGLA 1) ---
-  useEffect(() => {
-    if (!user || !activeRoom) return;
-
-    // Usamos el path estricto según la Regla 1
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', activeRoom);
+    const room = gunRef.current.get('webinar-v10').get(activeRoom);
     
-    const unsubscribe = onSnapshot(roomRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.page !== pageIndex) {
-          setPageIndex(data.page);
-          setMsg(`Sincronizado: Página ${data.page}`);
-        }
+    room.get('page').on((data) => {
+      if (data && data !== pageIndex) {
+        setPageIndex(data);
+        setMsg(`Sincronizado: Página ${data}`);
       }
-    }, (err) => setMsg("Error al recibir datos de la sala."));
+    });
 
-    return () => unsubscribe();
-  }, [user, activeRoom]);
+    return () => { if (room) room.off(); };
+  }, [activeRoom]);
 
   // --- LÓGICA DE SALAS ---
-  const handleJoin = async (roomName, isNew = false) => {
+  const handleJoin = (roomName) => {
     const name = (roomName || roomInput).trim().toLowerCase();
     if (!name) return setMsg("Escribe un nombre de sala.");
-    if (!user) return setMsg("Esperando conexión...");
-
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', name);
-
-    try {
-      if (isNew) {
-        await setDoc(roomRef, { page: 1, createdAt: Date.now() });
-        setMsg(`Sala "${name}" creada.`);
-      } else {
-        const snap = await getDoc(roomRef);
-        if (!snap.exists()) {
-          setMsg("La sala no existe. Intenta crearla.");
-          return;
-        }
-      }
-      setActiveRoom(name);
-    } catch (err) {
-      setMsg("No se pudo conectar a la base de datos.");
-    }
+    setActiveRoom(name);
+    setMsg(`Conectado a la sala: ${name}`);
   };
 
-  const changePage = async (step) => {
-    if (isLocked || !user || !activeRoom) return;
+  const changePage = (step) => {
+    if (isLocked) return;
     setIsLocked(true);
     setTimeout(() => setIsLocked(false), 1000);
 
     const newPage = Math.max(1, Math.min(TOTAL_PAGES, pageIndex + step));
     setPageIndex(newPage);
     
-    // Actualización en Firestore para todos
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', activeRoom);
-    await updateDoc(roomRef, { page: newPage }).catch(() => {});
+    // Enviamos el cambio a todos los que estén en la misma sala
+    if (activeRoom && gunRef.current) {
+      gunRef.current.get('webinar-v10').get(activeRoom).get('page').put(newPage);
+    }
   };
 
   // --- CONTROLES DE VOZ ---
@@ -163,7 +124,7 @@ export default function App() {
       const rec = new SpeechRec();
       rec.lang = 'es-ES';
       rec.continuous = true;
-      rec.onstart = () => { setVoiceOn(true); setMsg("🎤 Escuchando comandos..."); };
+      rec.onstart = () => { setVoiceOn(true); setMsg("🎤 Escuchando..."); };
       rec.onresult = (e) => {
         const text = e.results[e.results.length - 1][0].transcript.toLowerCase();
         if (text.includes('siguiente') || text.includes('pasa')) changePage(1);
@@ -198,19 +159,22 @@ export default function App() {
     el.select();
     document.execCommand('copy');
     document.body.removeChild(el);
-    setToast("¡Link copiado! Ya puedes enviarlo.");
+    setToast("¡Enlace copiado! Envíalo a otros.");
     setTimeout(() => setToast(""), 3000);
   };
 
-  // --- RENDER ---
+  // Escudo anti-errores de hidratación
+  if (!isMounted) return null;
+
+  // --- VISTA INICIAL ---
   if (!activeRoom) {
     return (
-      <div style={containerStyle}>
-        <style>{`body { margin: 0; background: #020617; font-family: 'Inter', sans-serif; }`}</style>
+      <div style={containerStyle} suppressHydrationWarning>
+        <style>{`body { margin: 0; background: #020617; font-family: sans-serif; }`}</style>
         <div style={cardStyle}>
           <div style={{ fontSize: '4rem', marginBottom: '15px' }}>🚀</div>
-          <h1 style={{ fontSize: '2.5rem', fontWeight: 900, color: 'white' }}>Live Webinar Pro</h1>
-          <p style={{ opacity: 0.6, marginBottom: '40px', color: 'white' }}>Sincronización profesional estable.</p>
+          <h1 style={{ fontSize: '2.5rem', fontWeight: 900, color: 'white' }}>Webinar Live PDF</h1>
+          <p style={{ opacity: 0.6, marginBottom: '40px', color: 'white' }}>Sin registros. P2P automático.</p>
           
           <input 
             placeholder="NOMBRE DE LA SALA"
@@ -220,15 +184,12 @@ export default function App() {
           />
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
-            <button onClick={() => handleJoin(undefined, true)} style={btnMainStyle}>
-              CREAR SALA NUEVA
-            </button>
-            <button onClick={() => handleJoin(undefined, false)} style={{ ...btnMainStyle, background: 'transparent', border: '2px solid #3b82f6' }}>
-              UNIRSE A SALA
+            <button onClick={() => handleJoin()} style={btnMainStyle}>
+              CREAR / UNIRSE A SALA
             </button>
           </div>
           
-          <div style={{ marginTop: '30px', fontSize: '13px', color: '#64748b', fontFamily: 'monospace' }}>
+          <div style={{ marginTop: '30px', fontSize: '12px', color: '#64748b', fontFamily: 'monospace' }}>
             {msg}
           </div>
         </div>
@@ -236,23 +197,23 @@ export default function App() {
     );
   }
 
+  // --- VISTA PRESENTACIÓN ---
   return (
-    <div style={containerStyle}>
+    <div style={containerStyle} suppressHydrationWarning>
       <style>{`
         body { margin: 0; overflow: hidden; background: #0f172a; }
-        .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #10b981; color: white; padding: 12px 24px; border-radius: 12px; z-index: 1000; box-shadow: 0 10px 30px rgba(0,0,0,0.4); font-weight: bold; border: 1px solid rgba(255,255,255,0.2); animation: slideUp 0.3s ease-out; }
+        .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #3b82f6; color: white; padding: 12px 24px; border-radius: 12px; z-index: 1000; box-shadow: 0 10px 30px rgba(0,0,0,0.4); font-weight: bold; animation: slideUp 0.3s ease-out; }
         @keyframes slideUp { from { transform: translate(-50%, 20px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
       `}</style>
 
       {toast && <div className="toast">{toast}</div>}
 
-      {/* Orador HD */}
+      {/* Cámara Flotante */}
       <div style={{
         position: 'fixed', bottom: '130px', right: '30px', 
         width: camOn ? '280px' : '0', height: camOn ? '280px' : '0',
         borderRadius: '32px', overflow: 'hidden', border: '4px solid #3b82f6', zIndex: 100,
-        backgroundColor: '#000', transition: 'all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
-        boxShadow: '0 20px 50px rgba(0,0,0,0.6)'
+        backgroundColor: '#000', transition: 'all 0.4s ease', boxShadow: '0 20px 50px rgba(0,0,0,0.6)'
       }}>
         <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
       </div>
@@ -260,18 +221,18 @@ export default function App() {
       {/* Header */}
       <div style={headerStyle}>
         <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
-          <div style={{ background: '#ef4444', padding: '6px 12px', borderRadius: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#ef4444', padding: '6px 12px', borderRadius: '10px' }}>
              <span style={{ fontWeight: 900, fontSize: '12px', color: 'white' }}>LIVE</span>
           </div>
           <div style={{ fontWeight: 800, fontSize: '16px', color: 'white' }}>SALA: <span style={{ color: '#3b82f6' }}>{activeRoom.toUpperCase()}</span></div>
         </div>
         
         <button onClick={copyLink} style={{ background: '#3b82f6', border: 'none', color: 'white', padding: '10px 20px', borderRadius: '14px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Icons.Share /> COMPARTIR LINK
+          <Icons.Share /> COPIAR LINK
         </button>
       </div>
 
-      {/* Visor PDF (Bypass de Google) */}
+      {/* Visor PDF */}
       <div style={{ flex: 1, width: '100%', background: '#1e293b', overflow: 'hidden', position: 'relative' }}>
         <iframe 
           key={pageIndex}
@@ -281,7 +242,7 @@ export default function App() {
         />
       </div>
 
-      {/* Footer */}
+      {/* Footer de Control */}
       <div style={footerStyle}>
         <div style={{ display: 'flex', gap: '15px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
           <button onClick={() => changePage(-1)} style={btnNavStyle}><Icons.Arrow dir="prev" /></button>
@@ -302,6 +263,7 @@ export default function App() {
   );
 }
 
+// --- ESTILOS ---
 const containerStyle = { height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' };
 const cardStyle = { background: '#0f172a', padding: '60px', borderRadius: '50px', width: '100%', maxWidth: '440px', textAlign: 'center', border: '1px solid rgba(255,255,255,0.05)', boxShadow: '0 40px 100px rgba(0,0,0,0.6)' };
 const inputStyle = { width: '100%', padding: '22px', borderRadius: '20px', border: '2px solid #3b82f6', background: 'transparent', color: 'white', marginBottom: '25px', fontSize: '1.2rem', textAlign: 'center', outline: 'none', boxSizing: 'border-box', fontWeight: 'bold' };
