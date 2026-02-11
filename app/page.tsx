@@ -50,7 +50,7 @@ export default function App() {
   useEffect(() => {
     setIsMounted(true);
     
-    // Carga dinámica de librerías para evitar errores de compilación
+    // Carga dinámica de librerías para evitar errores de compilación en entornos locales sin instalar
     const loadLibs = async () => {
       try {
         const Y = await import('yjs');
@@ -58,23 +58,23 @@ export default function App() {
         
         ydocRef.current = new Y.Doc();
         
-        // Verificamos si hay una sala en la URL para entrar de inmediato
+        // Verificamos si hay una sala en la URL para entrar de inmediato (Magic Link)
         const params = new URLSearchParams(window.location.search);
         const roomParam = params.get('room');
         if (roomParam) {
-          handleJoin(roomParam);
+          handleJoin(roomParam, false);
         } else {
           setMsg("Listo. Crea o únete a una sala.");
         }
       } catch (e) {
-        setMsg("Instalando dependencias en tiempo real...");
+        setMsg("Cargando dependencias en tiempo real...");
       }
     };
     loadLibs();
   }, []);
 
   // --- 2. LOGICA DE SINCRONIZACIÓN (SALA) ---
-  const handleJoin = async (roomName?: string) => {
+  const handleJoin = async (roomName?: string, isNew: boolean = false) => {
     const name = (roomName || roomInput).trim().toLowerCase();
     if (!name) return setMsg("Escribe un nombre de sala.");
 
@@ -93,8 +93,13 @@ export default function App() {
 
       sharedStateRef.current = ydocRef.current.getMap('state');
       
-      // Escuchamos cambios de otros usuarios
-      sharedStateRef.current.observe((event: any) => {
+      // Si estamos creando una sala nueva, podemos resetear el estado inicial
+      if (isNew) {
+        sharedStateRef.current.set('page', 1);
+      }
+
+      // Escuchamos cambios de otros usuarios en la sala
+      sharedStateRef.current.observe(() => {
         const newPage = sharedStateRef.current.get('page');
         if (newPage && newPage !== pageIndex) {
           setPageIndex(newPage);
@@ -103,7 +108,7 @@ export default function App() {
       });
 
       setActiveRoom(name);
-      setMsg(`Conexión establecida en: ${name}`);
+      setMsg(isNew ? `Sala creada: ${name}` : `Unido a: ${name}`);
     } catch (err) {
       setMsg("Error al conectar. Reintenta.");
     }
@@ -117,7 +122,7 @@ export default function App() {
     const newPage = Math.max(1, Math.min(TOTAL_PAGES, pageIndex + step));
     setPageIndex(newPage);
     
-    // Actualizamos el estado compartido para que todos lo vean
+    // Actualizamos el estado compartido para que todos lo vean instantáneamente
     if (sharedStateRef.current) {
       sharedStateRef.current.set('page', newPage);
     }
@@ -131,7 +136,6 @@ export default function App() {
       return;
     }
 
-    /* @ts-ignore */
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRec) return setMsg("Voz no compatible.");
 
@@ -178,11 +182,11 @@ export default function App() {
   // --- VISTA INICIAL (LOGIN) ---
   if (!activeRoom) {
     return (
-      <div style={containerStyle}>
+      <div style={containerStyle} suppressHydrationWarning>
         <style>{`body { margin: 0; background: #020617; font-family: 'Inter', sans-serif; }`}</style>
         <div style={cardStyle}>
           <div style={{ fontSize: '4rem', marginBottom: '15px' }}>🚀</div>
-          <h1 style={{ fontSize: '2.5rem', fontWeight: '900', color: 'white' }}>PDF Live Sync</h1>
+          <h1 style={{ fontSize: '2.5rem', fontWeight: 900, color: 'white' }}>PDF Live Sync</h1>
           <p style={{ opacity: 0.6, marginBottom: '40px', color: 'white' }}>Sincronización P2P instantánea.</p>
           
           <input 
@@ -192,7 +196,15 @@ export default function App() {
             style={inputStyle}
             onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
           />
-          <button onClick={() => handleJoin()} style={btnMainStyle}>ENTRAR A LA SALA</button>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
+            <button onClick={() => handleJoin(undefined, true)} style={btnMainStyle}>
+              CREAR SALA NUEVA
+            </button>
+            <button onClick={() => handleJoin(undefined, false)} style={{ ...btnMainStyle, background: 'transparent', border: '2px solid #3b82f6' }}>
+              UNIRSE A SALA
+            </button>
+          </div>
           
           <div style={{ marginTop: '30px', fontSize: '13px', color: '#64748b', fontFamily: 'monospace' }}>
             {msg}
@@ -204,7 +216,7 @@ export default function App() {
 
   // --- VISTA PRESENTACIÓN ---
   return (
-    <div style={containerStyle}>
+    <div style={containerStyle} suppressHydrationWarning>
       <style>{`
         body { margin: 0; overflow: hidden; background: #0f172a; }
         .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #3b82f6; color: white; padding: 12px 24px; border-radius: 12px; z-index: 1000; box-shadow: 0 10px 30px rgba(0,0,0,0.4); font-weight: bold; border: 1px solid rgba(255,255,255,0.2); animation: slideUp 0.3s ease-out; }
@@ -228,9 +240,9 @@ export default function App() {
       <div style={headerStyle}>
         <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#ef4444', padding: '6px 12px', borderRadius: '10px' }}>
-             <span style={{ fontWeight: '900', fontSize: '12px', color: 'white' }}>LIVE</span>
+             <span style={{ fontWeight: 900, fontSize: '12px', color: 'white' }}>LIVE</span>
           </div>
-          <div style={{ fontWeight: '800', fontSize: '16px', color: 'white' }}>SALA: <span style={{ color: '#3b82f6' }}>{activeRoom.toUpperCase()}</span></div>
+          <div style={{ fontWeight: 800, fontSize: '16px', color: 'white' }}>SALA: <span style={{ color: '#3b82f6' }}>{activeRoom.toUpperCase()}</span></div>
         </div>
         
         <button onClick={copyLink} style={{ background: '#3b82f6', border: 'none', color: 'white', padding: '10px 20px', borderRadius: '14px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -251,7 +263,7 @@ export default function App() {
       {/* Footer de Control */}
       <div style={footerStyle}>
         <div style={{ display: 'flex', gap: '15px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-          <button onClick={() => changePage(-1)} style={btnNavStyle}><Icons.Arrow dir="prev" /></button>
+          <button onClick={() => changePage(-1)} style={btnNavStyle}>{Icons.Arrow('prev')}</button>
           
           <button onClick={toggleVoice} style={{ ...btnNavStyle, width: '200px', background: voiceOn ? '#3b82f6' : '#1e293b' }}>
              <span style={{ color: 'white', fontWeight: 'bold' }}>{voiceOn ? '🎤 VOZ ACTIVA' : 'ACTIVAR VOZ'}</span>
@@ -261,7 +273,7 @@ export default function App() {
             <Icons.Cam /> <span style={{ marginLeft: '12px', color: 'white', fontWeight: 'bold' }}>{camOn ? 'CAM OFF' : 'CÁMARA HD'}</span>
           </button>
 
-          <button onClick={() => changePage(1)} style={btnNavStyle}><Icons.Arrow dir="next" /></button>
+          <button onClick={() => changePage(1)} style={btnNavStyle}>{Icons.Arrow('next')}</button>
         </div>
         <div style={{ fontSize: '12px', color: '#475569', marginTop: '15px', fontWeight: 'bold' }}>{msg}</div>
       </div>
@@ -270,10 +282,10 @@ export default function App() {
 }
 
 // --- ESTILOS ---
-const containerStyle: React.CSSProperties = { height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' };
-const cardStyle: React.CSSProperties = { background: '#0f172a', padding: '60px', borderRadius: '50px', width: '100%', maxWidth: '440px', textAlign: 'center', border: '1px solid rgba(255,255,255,0.05)', boxShadow: '0 40px 100px rgba(0,0,0,0.6)' };
-const inputStyle: React.CSSProperties = { width: '100%', padding: '22px', borderRadius: '20px', border: '2px solid #3b82f6', background: 'transparent', color: 'white', marginBottom: '25px', fontSize: '1.2rem', textAlign: 'center', outline: 'none', boxSizing: 'border-box', fontWeight: 'bold' };
-const btnMainStyle: React.CSSProperties = { width: '100%', padding: '22px', borderRadius: '20px', border: 'none', background: '#3b82f6', color: 'white', fontWeight: '900', cursor: 'pointer', fontSize: '1.1rem' };
-const headerStyle: React.CSSProperties = { width: '100%', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#020617', borderBottom: '1px solid #1e293b', boxSizing: 'border-box', zIndex: 50 };
-const footerStyle: React.CSSProperties = { width: '100%', background: '#020617', padding: '30px', borderTop: '1px solid #1e293b', textAlign: 'center', boxSizing: 'border-box', zIndex: 50 };
-const btnNavStyle: React.CSSProperties = { background: '#1e293b', border: 'none', padding: '16px 28px', borderRadius: '18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s ease' };
+const containerStyle: any = { height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' };
+const cardStyle: any = { background: '#0f172a', padding: '60px', borderRadius: '50px', width: '100%', maxWidth: '440px', textAlign: 'center', border: '1px solid rgba(255,255,255,0.05)', boxShadow: '0 40px 100px rgba(0,0,0,0.6)' };
+const inputStyle: any = { width: '100%', padding: '22px', borderRadius: '20px', border: '2px solid #3b82f6', background: 'transparent', color: 'white', marginBottom: '25px', fontSize: '1.2rem', textAlign: 'center', outline: 'none', boxSizing: 'border-box', fontWeight: 'bold' };
+const btnMainStyle: any = { width: '100%', padding: '22px', borderRadius: '20px', border: 'none', background: '#3b82f6', color: 'white', fontWeight: 900, cursor: 'pointer', fontSize: '1.1rem' };
+const headerStyle: any = { width: '100%', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#020617', borderBottom: '1px solid #1e293b', boxSizing: 'border-box', zIndex: 50 };
+const footerStyle: any = { width: '100%', background: '#020617', padding: '30px', borderTop: '1px solid #1e293b', textAlign: 'center', boxSizing: 'border-box', zIndex: 50 };
+const btnNavStyle: any = { background: '#1e293b', border: 'none', padding: '16px 28px', borderRadius: '18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s ease' };
