@@ -5,40 +5,51 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 /**
- * WEBINAR MASTER P2P (VERSIÓN FINAL SIN LÍMITES)
- * - Video/Audio: PeerJS (Conexión directa entre PCs, gratis e ilimitada).
- * - Sincro PDF: Gun.js (Nodos gratuitos de relevo).
- * - Visor PDF: Google Docs Proxy (Evita bloqueos de Hostinger).
+ * WEBINAR MASTER P2P (VERSIÓN REDDIT OPTIMIZADA)
+ * - Video/Audio: PeerJS + STUN Servers de Google (Crucial para saltar routers).
+ * - Sincro PDF: Gun.js (Sincronización de estado).
+ * - Visor PDF: Google Docs Proxy.
  */
 
 const GUN_CDN = "https://cdn.jsdelivr.net/npm/gun/gun.js";
 const PEER_CDN = "https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js";
+
 const GUN_PEERS = [
   'https://gun-manhattan.herokuapp.com/gun',
   'https://relay.peer.ooo/gun'
 ];
 
+// Servidores STUN gratuitos de Google para asegurar que el P2P atraviese cualquier red
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+    ]
+  }
+};
+
 const RAW_PDF_URL = "https://darkturquoise-capybara-951908.hostingersite.com/wp-content/uploads/2026/02/10L-Juanes-2026.pdf";
 const getPdfUrl = (page) => `https://docs.google.com/viewer?url=${encodeURIComponent(RAW_PDF_URL)}&embedded=true`;
 const TOTAL_PAGES = 30; 
 
-// Iconos en SVG para evitar dependencias de librerías externas que den error
 const Icons = {
   Arrow: (dir) => <svg style={{ transform: dir === 'prev' ? 'rotate(180deg)' : 'none' }} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>,
   Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>,
-  Video: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>,
-  Check: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+  Refresh: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
 };
 
 export default function App() {
   const [isMounted, setIsMounted] = useState(false);
   const [roomInput, setRoomInput] = useState("");
   const [activeRoom, setActiveRoom] = useState(null);
-  const [role, setRole] = useState(null); // 'host' | 'viewer'
+  const [role, setRole] = useState(null); 
   const [pageIndex, setPageIndex] = useState(1);
   const [msg, setMsg] = useState("Cargando sistemas...");
   const [toast, setToast] = useState("");
   const [isLive, setIsLive] = useState(false);
+  const [hostIdFound, setHostIdFound] = useState(null);
 
   const gunRef = useRef(null);
   const peerRef = useRef(null);
@@ -46,10 +57,9 @@ export default function App() {
   const remoteVideoRef = useRef(null);
   const streamRef = useRef(null);
 
-  // --- 1. CARGA DE SCRIPTS Y LÓGICA DE MONTAJE ---
+  // --- 1. CARGA DE SCRIPTS ---
   useEffect(() => {
     setIsMounted(true);
-    
     const loadScript = (src) => new Promise(res => {
       if (document.querySelector(`script[src="${src}"]`)) return res();
       const s = document.createElement('script'); s.src = src; s.onload = res; document.body.appendChild(s);
@@ -63,68 +73,74 @@ export default function App() {
       const roomParam = params.get('room');
       if (roomParam) {
         setRoomInput(roomParam);
-        setMsg(`Invitación para sala: ${roomParam}`);
+        setMsg(`Sala "${roomParam}" detectada.`);
       }
     });
   }, []);
 
-  // --- 2. SINCRONIZACIÓN DE DATOS (PÁGINA Y VIDEO) ---
+  // --- 2. SINCRONIZACIÓN DE DATOS (CONSEJO REDDIT: AGRESIVA) ---
   useEffect(() => {
     if (!activeRoom || !gunRef.current) return;
-    const room = gunRef.current.get('webinar-v50-stable').get(activeRoom);
+    const room = gunRef.current.get('webinar-v60-stun').get(activeRoom);
     
     // Escuchar cambio de página
     room.get('page').on((data) => {
       if (data && data !== pageIndex) setPageIndex(data);
     });
 
-    // Escuchar quién es el Host para conectarse al video
+    // Escuchar ID del Host
     room.get('hostPeerId').on((id) => {
-      if (id && role === 'viewer' && !isLive) {
-        connectToHost(id);
+      if (id && id !== hostIdFound) {
+        setHostIdFound(id);
+        if (role === 'viewer') connectToHost(id);
       }
     });
 
     return () => room.off();
-  }, [activeRoom, role, isLive]);
+  }, [activeRoom, role, hostIdFound]);
 
-  // --- LÓGICA PEERJS (VIDEO GRATIS) ---
   const initPeer = (roomName, isHost) => {
-    const peer = new window.Peer();
+    // Creamos el Peer con la configuración STUN para atravesar firewalls
+    const peer = new window.Peer(undefined, PEER_CONFIG);
     peerRef.current = peer;
 
     peer.on('open', (id) => {
       if (isHost) {
-        // El host publica su ID para que los demás lo llamen
-        gunRef.current.get('webinar-v50-stable').get(roomName).get('hostPeerId').put(id);
-        setMsg("Transmitiendo señal...");
+        gunRef.current.get('webinar-v60-stun').get(roomName).get('hostPeerId').put(id);
+        setMsg("Transmitiendo ID a la red...");
       }
     });
 
     peer.on('call', (call) => {
-      // El host responde con su cámara
       if (streamRef.current) call.answer(streamRef.current);
     });
 
-    peer.on('error', () => setMsg("Error de conexión. Prueba refrescar."));
+    peer.on('error', (err) => {
+      console.error(err);
+      setMsg("Error P2P: " + err.type);
+    });
   };
 
   const connectToHost = (hostId) => {
     if (!peerRef.current || role !== 'viewer') return;
-    setMsg("Sincronizando video...");
+    setMsg("Intentando conectar con cámara...");
     
-    // Llamada muda para recibir el video del host
+    // Llamada de señalización
     const call = peerRef.current.call(hostId, new MediaStream());
     call.on('stream', (remoteStream) => {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = remoteStream;
         setIsLive(true);
-        setMsg("En vivo");
+        setMsg("¡Conexión establecida!");
       }
     });
+
+    // Tiempo de espera para informar al usuario
+    setTimeout(() => {
+      if (!isLive) setMsg("Host detectado, esperando señal de video...");
+    }, 3000);
   };
 
-  // --- ACCIONES DEL USUARIO ---
   const handleJoin = async (selectedRole) => {
     const name = roomInput.trim().toLowerCase();
     if (!name) return setMsg("Ingresa un nombre de sala.");
@@ -140,11 +156,11 @@ export default function App() {
         setIsLive(true);
         initPeer(name, true);
       } catch (e) {
-        setMsg("Permiso de cámara denegado.");
+        setMsg("Cámara bloqueada. Revisa los permisos.");
       }
     } else {
       initPeer(name, false);
-      setMsg("Buscando al anfitrión...");
+      setMsg("Buscando anfitrión en la red...");
     }
   };
 
@@ -152,52 +168,43 @@ export default function App() {
     const newPage = Math.max(1, Math.min(TOTAL_PAGES, pageIndex + step));
     setPageIndex(newPage);
     if (activeRoom && gunRef.current) {
-      gunRef.current.get('webinar-v50-stable').get(activeRoom).get('page').put(newPage);
+      gunRef.current.get('webinar-v60-stun').get(activeRoom).get('page').put(newPage);
     }
   };
 
   const copyLink = () => {
     const url = `${window.location.origin}${window.location.pathname}?room=${activeRoom}`;
     navigator.clipboard.writeText(url);
-    setToast("¡Enlace copiado! Envíalo a tus invitados.");
+    setToast("¡Link copiado!");
     setTimeout(() => setToast(""), 3000);
   };
 
   if (!isMounted) return null;
 
-  // --- PANTALLA DE INICIO ---
   if (!activeRoom) {
     return (
       <div style={containerStyle} suppressHydrationWarning>
-        <style>{`body { margin: 0; background: #020617; font-family: 'Inter', sans-serif; color: white; }`}</style>
+        <style>{`body { margin: 0; background: #020617; font-family: sans-serif; color: white; }`}</style>
         <div style={cardStyle}>
-          <div style={{ fontSize: '4.5rem', marginBottom: '10px' }}>🚀</div>
-          <h1 style={{ fontSize: '2.5rem', fontWeight: 900 }}>Webinar Pro</h1>
-          <p style={{ opacity: 0.6, marginBottom: '40px' }}>Video, Audio y PDF sincronizados (Sin Límites).</p>
-          
+          <div style={{ fontSize: '4rem', marginBottom: '10px' }}>🌐</div>
+          <h1 style={{ fontSize: '2.5rem', fontWeight: 900 }}>Webinar P2P Pro</h1>
+          <p style={{ opacity: 0.6, marginBottom: '40px' }}>Conexión directa vía Google STUN (Sin Límites).</p>
           <input 
             placeholder="NOMBRE DE LA SALA"
             value={roomInput}
             onChange={(e) => setRoomInput(e.target.value)}
             style={inputStyle}
           />
-          
           <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', width: '100%' }}>
-            <button onClick={() => handleJoin('host')} style={btnMainStyle}>
-               CREAR SALA (HOST)
-            </button>
-            <button onClick={() => handleJoin('viewer')} style={{ ...btnMainStyle, background: 'transparent', border: '2px solid #3b82f6' }}>
-               UNIRSE A SALA (ESPECTADOR)
-            </button>
+            <button onClick={() => handleJoin('host')} style={btnMainStyle}>EMPEZAR COMO HOST</button>
+            <button onClick={() => handleJoin('viewer')} style={{ ...btnMainStyle, background: 'transparent', border: '2px solid #3b82f6' }}>ENTRAR COMO ESPECTADOR</button>
           </div>
-          
           <div style={{ marginTop: '30px', fontSize: '13px', color: '#64748b' }}>{msg}</div>
         </div>
       </div>
     );
   }
 
-  // --- PANTALLA DE CONFERENCIA ---
   return (
     <div style={containerStyle} suppressHydrationWarning>
       <style>{`
@@ -208,7 +215,7 @@ export default function App() {
 
       {toast && <div className="toast">{toast}</div>}
 
-      {/* CÁMARA FLOTANTE */}
+      {/* VIDEO FLOTANTE */}
       <div style={{
         position: 'fixed', bottom: '130px', right: '30px', 
         width: isLive ? '320px' : '0', height: isLive ? '240px' : '0',
@@ -224,22 +231,29 @@ export default function App() {
       <div style={headerStyle}>
         <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
           <div style={{ background: role === 'host' ? '#ef4444' : '#3b82f6', padding: '6px 14px', borderRadius: '10px' }}>
-             <span style={{ fontWeight: 900, fontSize: '11px', color: 'white' }}>{role === 'host' ? 'TRANSMITIENDO' : 'MIRANDO'}</span>
+             <span style={{ fontWeight: 900, fontSize: '11px', color: 'white' }}>{role === 'host' ? 'ANFITRIÓN' : 'ESPECTADOR'}</span>
           </div>
           <div style={{ fontWeight: 800, fontSize: '16px', color: 'white' }}>SALA: <span style={{ color: '#3b82f6' }}>{activeRoom.toUpperCase()}</span></div>
         </div>
         
-        <button onClick={copyLink} style={{ background: '#3b82f6', border: 'none', color: 'white', padding: '10px 20px', borderRadius: '14px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Icons.Share /> COPIAR LINK
-        </button>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          {role === 'viewer' && hostIdFound && (
+            <button onClick={() => connectToHost(hostIdFound)} style={{ ...btnShareStyle, background: '#1e293b' }}>
+              <Icons.Refresh /> RECONECTAR VIDEO
+            </button>
+          )}
+          <button onClick={copyLink} style={btnShareStyle}>
+            <Icons.Share /> COPIAR LINK
+          </button>
+        </div>
       </div>
 
-      {/* PDF VIEWER */}
+      {/* VISOR PDF */}
       <div style={{ flex: 1, width: '100%', background: '#1e293b', overflow: 'hidden' }}>
-        <iframe key={pageIndex} src={getPdfUrl(pageIndex)} style={{ width: '100%', height: '100%', border: 'none' }} title="PDF Content" />
+        <iframe key={pageIndex} src={getPdfUrl(pageIndex)} style={{ width: '100%', height: '100%', border: 'none' }} title="PDF" />
       </div>
 
-      {/* FOOTER CONTROLES */}
+      {/* FOOTER */}
       <div style={footerStyle}>
         <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center' }}>
           <button onClick={() => changePage(-1)} style={btnNavStyle}><Icons.Arrow dir="prev" /></button>
@@ -262,5 +276,6 @@ const cardStyle = { background: '#0f172a', padding: '70px', borderRadius: '60px'
 const inputStyle = { width: '100%', padding: '24px', borderRadius: '22px', border: '2px solid #3b82f6', background: 'transparent', color: 'white', marginBottom: '30px', fontSize: '1.2rem', textAlign: 'center', outline: 'none', boxSizing: 'border-box', fontWeight: 'bold' };
 const btnMainStyle = { width: '100%', padding: '22px', borderRadius: '22px', border: 'none', background: '#3b82f6', color: 'white', fontWeight: 900, cursor: 'pointer', fontSize: '1rem', transition: 'all 0.2s ease' };
 const headerStyle = { width: '100%', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#020617', borderBottom: '1px solid #1e293b', boxSizing: 'border-box', zIndex: 50 };
-const footerStyle = { width: '100%', background: '#020617', padding: '35px', borderTop: '1px solid #1e293b', textAlign: 'center', boxSizing: 'border-box', zIndex: 50 };
+const btnShareStyle = { background: '#3b82f6', border: 'none', color: 'white', padding: '10px 20px', borderRadius: '14px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' };
+const footerStyle = { width: '100%', background: '#020617', padding: '30px', borderTop: '1px solid #1e293b', textAlign: 'center', boxSizing: 'border-box', zIndex: 50 };
 const btnNavStyle = { background: '#1e293b', border: 'none', padding: '18px 32px', borderRadius: '20px', color: 'white', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' };
